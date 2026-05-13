@@ -228,7 +228,7 @@ prvxMBTCPPortReceive( void *pvArg, struct tcp_pcb *pxPCB, struct pbuf *p, err_t 
 {
     USHORT          usLength;
 
-    err_t           error;
+    err_t error = ERR_OK;
 
     if( xErr != ERR_OK )
     {

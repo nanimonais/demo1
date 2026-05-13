@@ -1,108 +1,138 @@
-/*
- * FreeModbus Libary: lwIP Port
- * Copyright (C) 2006 Christian Walter <wolti@sil.at>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
- * File: $Id$
- */
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    portevent.c
+  * @brief   FreeModbus event port for FreeRTOS
+  ******************************************************************************
+  */
+/* USER CODE END Header */
 
-/* ----------------------- System includes ----------------------------------*/
-#include "assert.h"
-
-/* ----------------------- lwIP ---------------------------------------------*/
-#include "lwip/api.h"
-#include "lwip/sys.h"
-
-/* ----------------------- Modbus includes ----------------------------------*/
+/* Includes ------------------------------------------------------------------*/
 #include "mb.h"
+#include "mbport.h"
 
-/* ----------------------- Defines ------------------------------------------*/
-#define MB_POLL_CYCLETIME       100     /* Poll cycle time is 100ms */
-/* ----------------------- Static variables ---------------------------------*/
-static sys_mbox_t xMailBox;
-static eMBEventType eMailBoxEvent;
+#include "FreeRTOS.h"
+#include "queue.h"
+#include "task.h"
 
-/* ----------------------- Start implementation -----------------------------*/
-BOOL
-xMBPortEventInit( void )
+#include "stm32f7xx_hal.h"
+
+/* Private define ------------------------------------------------------------*/
+#define MB_EVENT_QUEUE_LENGTH    16U
+
+/* Private variables ---------------------------------------------------------*/
+static QueueHandle_t xMBEventQueue = NULL;
+
+/* Private function prototypes -----------------------------------------------*/
+static BaseType_t prvMBPortIsInISR(void);
+
+/* Private functions ---------------------------------------------------------*/
+
+/**
+  * @brief  判断当前是否处于中断上下文
+  */
+static BaseType_t prvMBPortIsInISR(void)
 {
-    if (sys_mbox_new(&xMailBox, 16) == ERR_OK)
+    return (__get_IPSR() != 0U) ? pdTRUE : pdFALSE;
+}
+
+/* Exported functions --------------------------------------------------------*/
+
+/**
+  * @brief  初始化 Modbus 事件队列
+  */
+BOOL xMBPortEventInit(void)
+{
+    if (xMBEventQueue != NULL)
     {
-        return TRUE;
+        vQueueDelete(xMBEventQueue);
+        xMBEventQueue = NULL;
     }
-    else
+
+    xMBEventQueue = xQueueCreate(
+        MB_EVENT_QUEUE_LENGTH,
+        sizeof(eMBEventType)
+    );
+
+    return (xMBEventQueue != NULL) ? TRUE : FALSE;
+}
+
+/**
+  * @brief  关闭 Modbus 事件队列
+  */
+void vMBPortEventClose(void)
+{
+    if (xMBEventQueue != NULL)
+    {
+        vQueueDelete(xMBEventQueue);
+        xMBEventQueue = NULL;
+    }
+}
+
+/**
+  * @brief  投递 Modbus 事件
+  *
+  * RTU 接收过程中，事件可能从 USART/TIM 中断路径触发，
+  * 所以这里必须区分中断上下文和任务上下文。
+  */
+BOOL xMBPortEventPost(eMBEventType eEvent)
+{
+    BaseType_t xResult;
+
+    if (xMBEventQueue == NULL)
     {
         return FALSE;
     }
-}
 
-void
-vMBPortEventClose( void )
-{
-    if( xMailBox != SYS_MBOX_NULL )
+    if (prvMBPortIsInISR() == pdTRUE)
     {
-        sys_mbox_free( xMailBox );
-    }
-}
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
-//BOOL
-//xMBPortEventPost( eMBEventType eEvent )
-//{
-//    eMailBoxEvent = eEvent;
-//    sys_mbox_post( xMailBox, &eMailBoxEvent );
-//    return TRUE;
-//}
+        xResult = xQueueSendFromISR(
+            xMBEventQueue,
+            &eEvent,
+            &xHigherPriorityTaskWoken
+        );
 
-BOOL xMBPortEventPost( eMBEventType eEvent )
-{
-    /* 直接把枚举值当作 void* 存进去即可 */
-    if (sys_mbox_trypost(&xMailBox, (void*)eEvent) == ERR_OK)
-    {
-        return TRUE;
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+
+        return (xResult == pdPASS) ? TRUE : FALSE;
     }
     else
     {
-        return FALSE;
+        /*
+         * 任务上下文不要用 portMAX_DELAY。
+         * TCP 回调路径里如果阻塞，会导致网络卡住。
+         */
+        xResult = xQueueSend(
+            xMBEventQueue,
+            &eEvent,
+            0
+        );
+
+        return (xResult == pdPASS) ? TRUE : FALSE;
     }
 }
 
-
-//BOOL
-//xMBPortEventGet( eMBEventType * eEvent )
-//{
-//    void           *peMailBoxEvent;
-//    BOOL            xEventHappend = FALSE;
-//    u32_t           uiTimeSpent;
-//
-//    uiTimeSpent = sys_arch_mbox_fetch( xMailBox, &peMailBoxEvent, MB_POLL_CYCLETIME );
-//    if( uiTimeSpent != SYS_ARCH_TIMEOUT )
-//    {
-//        *eEvent = *( eMBEventType * ) peMailBoxEvent;
-//        eMailBoxEvent = EV_READY;
-//        xEventHappend = TRUE;
-//    }
-//    return xEventHappend;
-//}
-
-BOOL xMBPortEventGet( eMBEventType * eEvent )
+/**
+  * @brief  获取 Modbus 事件
+  *
+  * eMBPoll() 会调用这个函数等待事件。
+  */
+BOOL xMBPortEventGet(eMBEventType *eEvent)
 {
-    void *peMailBoxEvent;
+    BaseType_t xResult;
 
-    sys_arch_mbox_fetch(&xMailBox, &peMailBoxEvent, 0);
+    if ((xMBEventQueue == NULL) || (eEvent == NULL))
+    {
+        return FALSE;
+    }
 
-    *eEvent = (eMBEventType)peMailBoxEvent;
-    return TRUE;
+    xResult = xQueueReceive(
+        xMBEventQueue,
+        eEvent,
+        portMAX_DELAY
+    );
+
+    return (xResult == pdPASS) ? TRUE : FALSE;
 }

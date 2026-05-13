@@ -35,6 +35,20 @@ volatile int g_rs485_1_hello_last_status;
 volatile uint32_t g_rs485_2_hello_tx_count;
 volatile int g_rs485_2_hello_last_status;
 
+volatile uint8_t  g_rs485_2_echo_rx_byte;
+volatile uint8_t  g_rs485_2_echo_rx_buf[256];
+volatile uint16_t g_rs485_2_echo_rx_len;
+
+volatile uint32_t g_rs485_2_echo_rx_count;
+volatile uint32_t g_rs485_2_echo_tx_count;
+volatile uint32_t g_rs485_2_echo_timeout_count;
+volatile uint32_t g_rs485_2_echo_error_count;
+
+volatile int      g_rs485_2_echo_rx_status;
+volatile int      g_rs485_2_echo_tx_status;
+volatile uint32_t g_rs485_2_echo_uart_error;
+volatile uint32_t g_rs485_2_echo_last_tick;
+
 static uint16_t ModbusCRC16(const uint8_t *data, uint16_t length);
 static void ModbusHoldingInit(void);
 static void RS485_1_SetTx(uint8_t enable);
@@ -160,30 +174,185 @@ void RS485_1_HelloTask(void *argument)
 
 void RS485_2_HelloTask(void *argument)
 {
-    TickType_t xLastWakeTime;
-    const uint8_t message[] = "RTU2 hello\r\n";
     HAL_StatusTypeDef status;
+    HAL_StatusTypeDef txStatus;
+
+    uint8_t rx;
+    uint8_t frame[256];
+    uint16_t frameLen;
 
     (void)argument;
-    xLastWakeTime = xTaskGetTickCount();
+
+    /*
+     * RS485_2 = USART1
+     * TX = PA9
+     * RX = PA10
+     * DE = PB0
+     *
+     * DE = 0: 接收模式
+     * DE = 1: 发送模式
+     */
+
+    RS485_2_SetTx(0U);
+
+    /*
+     * 防止之前 Modbus RTU 或其他接收状态残留。
+     */
+    (void)HAL_UART_Abort(&huart1);
+    (void)HAL_UART_AbortReceive(&huart1);
+    (void)HAL_UART_AbortTransmit(&huart1);
+
+    g_rs485_2_echo_rx_byte = 0U;
+    g_rs485_2_echo_rx_len = 0U;
+
+    g_rs485_2_echo_rx_count = 0U;
+    g_rs485_2_echo_tx_count = 0U;
+    g_rs485_2_echo_timeout_count = 0U;
+    g_rs485_2_echo_error_count = 0U;
+
+    g_rs485_2_echo_rx_status = 0;
+    g_rs485_2_echo_tx_status = 0;
+    g_rs485_2_echo_uart_error = 0U;
+    g_rs485_2_echo_last_tick = 0U;
 
     for (;;)
     {
-        RS485_2_SetTx(1U);
-        status = HAL_UART_Transmit(&huart1, (uint8_t *)message, sizeof(message) - 1U, 100U);
-        while (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_TC) == RESET)
-        {
-        }
+        frameLen = 0U;
+
+        /*
+         * 一直保持接收模式。
+         */
         RS485_2_SetTx(0U);
 
-        g_rs485_2_hello_tx_count++;
-        g_rs485_2_hello_last_status = (int)status;
+        /*
+         * 等待第 1 个字节。
+         * 100ms 超时一次，方便任务持续运行。
+         */
+        status = HAL_UART_Receive(&huart1, &rx, 1U, 100U);
+        g_rs485_2_echo_rx_status = (int)status;
 
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(RS485_2_HELLO_PERIOD_MS));
+        if (status == HAL_TIMEOUT)
+        {
+            g_rs485_2_echo_timeout_count++;
+            osDelay(1);
+            continue;
+        }
+
+        if (status != HAL_OK)
+        {
+            g_rs485_2_echo_error_count++;
+            g_rs485_2_echo_uart_error = huart1.ErrorCode;
+
+            (void)HAL_UART_Abort(&huart1);
+            (void)HAL_UART_AbortReceive(&huart1);
+
+            RS485_2_SetTx(0U);
+            osDelay(1);
+            continue;
+        }
+
+        /*
+         * 收到第 1 个字节。
+         */
+        frame[frameLen] = rx;
+        g_rs485_2_echo_rx_buf[frameLen] = rx;
+        frameLen++;
+
+        g_rs485_2_echo_rx_byte = rx;
+        g_rs485_2_echo_rx_count++;
+        g_rs485_2_echo_last_tick = HAL_GetTick();
+
+        /*
+         * 继续接收后续字节。
+         * 如果 10ms 内没有新字节，就认为这一帧结束。
+         *
+         * 这样上位机发送 "123456"，STM32 会收到完整一帧后再回传，
+         * 不会收到 1 个字节就立刻抢占总线发送，避免 RS485 半双工冲突。
+         */
+        while (frameLen < sizeof(frame))
+        {
+            status = HAL_UART_Receive(&huart1, &rx, 1U, 10U);
+            g_rs485_2_echo_rx_status = (int)status;
+
+            if (status == HAL_OK)
+            {
+                frame[frameLen] = rx;
+                g_rs485_2_echo_rx_buf[frameLen] = rx;
+                frameLen++;
+
+                g_rs485_2_echo_rx_byte = rx;
+                g_rs485_2_echo_rx_count++;
+                g_rs485_2_echo_last_tick = HAL_GetTick();
+
+                if ((rx == '\n') || (rx == '\r'))
+                {
+                    break;
+                }
+            }
+            else if (status == HAL_TIMEOUT)
+            {
+                break;
+            }
+            else
+            {
+                g_rs485_2_echo_error_count++;
+                g_rs485_2_echo_uart_error = huart1.ErrorCode;
+
+                (void)HAL_UART_Abort(&huart1);
+                (void)HAL_UART_AbortReceive(&huart1);
+
+                break;
+            }
+        }
+
+        g_rs485_2_echo_rx_len = frameLen;
+
+        /*
+         * 收到多少，回传多少。
+         */
+        if (frameLen > 0U)
+        {
+            /*
+             * 稍微延时，给 USB-RS485 转接器一点方向切换时间。
+             */
+            osDelay(2);
+
+            RS485_2_SetTx(1U);
+
+            txStatus = HAL_UART_Transmit(&huart1, frame, frameLen, 200U);
+            g_rs485_2_echo_tx_status = (int)txStatus;
+
+            /*
+             * 等待最后一个字节真正发完，再切回接收。
+             */
+            while (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_TC) == RESET)
+            {
+            }
+
+            RS485_2_SetTx(0U);
+
+            if (txStatus == HAL_OK)
+            {
+                g_rs485_2_echo_tx_count++;
+            }
+            else
+            {
+                g_rs485_2_echo_error_count++;
+                g_rs485_2_echo_uart_error = huart1.ErrorCode;
+
+                (void)HAL_UART_Abort(&huart1);
+                RS485_2_SetTx(0U);
+            }
+        }
+
+        osDelay(1);
     }
 }
 
+void RS485_2_RxTask(void *argument)
+{
 
+}
 eMBErrorCode
 eMBRegHoldingCB( UCHAR * pucRegBuffer, USHORT usAddress,
                  USHORT usNRegs, eMBRegisterMode eMode )
