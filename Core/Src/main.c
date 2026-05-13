@@ -101,13 +101,13 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_CAN3_Init();
-  MX_USART1_UART_Init();
-  MX_UART8_Init();
-  MX_SPI1_Init();
-  MX_TIM2_Init();
-  MX_TIM4_Init();
-  MX_USART3_UART_Init();
+//  MX_CAN3_Init();
+//  MX_USART1_UART_Init();
+//  MX_UART8_Init();
+//  MX_SPI1_Init();
+//  MX_TIM2_Init();
+//  MX_TIM4_Init();
+//  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   PHY_Reset();
 

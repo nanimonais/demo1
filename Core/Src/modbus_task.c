@@ -78,7 +78,7 @@ void ModbusTCP_Task(void *argument)
     for (;;)
     {
         eMBPoll();
-        vTaskDelay(pdMS_TO_TICKS(5));
+        osDelay(1);
     }
 }
 
