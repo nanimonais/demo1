@@ -1,0 +1,6 @@
+../Core/Src/freertos.c:138:6:MX_FREERTOS_Init	1
+../Core/Src/freertos.c:181:6:StartDefaultTask	1
+../Core/Src/freertos.c:229:13:UartTxTask	1
+../Core/Src/freertos.c:242:13:SpiTestTask	2
+../Core/Src/freertos.c:269:10:MB_UART8_TestRxBuffer	1
+../Core/Src/freertos.c:276:6:MB_UART8_TestRxCallback	4

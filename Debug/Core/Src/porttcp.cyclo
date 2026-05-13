@@ -1,0 +1,9 @@
+../Core/Src/porttcp.c:64:1:xMBTCPPortInit	5
+../Core/Src/porttcp.c:112:1:prvvMBPortReleaseClient	5
+../Core/Src/porttcp.c:137:1:vMBTCPPortClose	1
+../Core/Src/porttcp.c:150:1:vMBTCPPortDisable	1
+../Core/Src/porttcp.c:156:1:prvxMBTCPPortAccept	3
+../Core/Src/porttcp.c:205:1:prvvMBTCPPortError	3
+../Core/Src/porttcp.c:227:1:prvxMBTCPPortReceive	7
+../Core/Src/porttcp.c:300:1:xMBTCPPortGetRequest	1
+../Core/Src/porttcp.c:311:1:xMBTCPPortSendResponse	3

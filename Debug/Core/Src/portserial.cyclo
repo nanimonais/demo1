@@ -1,0 +1,10 @@
+../Core/Src/portserial.c:21:13:prvSetRS485Tx	2
+../Core/Src/portserial.c:30:6:xMBPortSerialInit	3
+../Core/Src/portserial.c:65:6:vMBPortClose	1
+../Core/Src/portserial.c:70:6:xMBPortSerialClose	2
+../Core/Src/portserial.c:83:6:vMBPortSerialEnable	5
+../Core/Src/portserial.c:118:6:xMBPortSerialGetByte	1
+../Core/Src/portserial.c:124:6:xMBPortSerialPutByte	3
+../Core/Src/portserial.c:135:6:HAL_UART_RxCpltCallback	6
+../Core/Src/portserial.c:151:6:HAL_UART_TxCpltCallback	5
+../Core/Src/portserial.c:162:6:HAL_UART_ErrorCallback	4

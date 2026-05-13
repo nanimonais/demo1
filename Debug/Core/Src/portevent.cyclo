@@ -1,0 +1,4 @@
+../Core/Src/portevent.c:40:1:xMBPortEventInit	2
+../Core/Src/portevent.c:53:1:vMBPortEventClose	2
+../Core/Src/portevent.c:69:6:xMBPortEventPost	2
+../Core/Src/portevent.c:100:6:xMBPortEventGet	1

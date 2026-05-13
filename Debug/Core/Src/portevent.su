@@ -1,0 +1,4 @@
+../Core/Src/portevent.c:40:1:xMBPortEventInit	8	static
+../Core/Src/portevent.c:53:1:vMBPortEventClose	8	static
+../Core/Src/portevent.c:69:6:xMBPortEventPost	16	static
+../Core/Src/portevent.c:100:6:xMBPortEventGet	24	static

@@ -124,6 +124,11 @@ void MX_LWIP_Init(void)
 /* USER CODE END OS_THREAD_NEW_CMSIS_RTOS_V2 */
 
 /* USER CODE BEGIN 3 */
+  if (netif_is_link_up(&gnetif)) {
+      netif_set_up(&gnetif);
+  } else {
+      netif_set_down(&gnetif);
+  }
 
 /* USER CODE END 3 */
 }

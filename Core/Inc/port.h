@@ -24,8 +24,6 @@
 #define _PORT_H
 
 #include <assert.h>
-#include "FreeRTOS.h"
-#include "task.h"
 
 /* ----------------------- Defines ------------------------------------------*/
 
@@ -45,8 +43,6 @@
 PR_BEGIN_EXTERN_C
 #endif
 #define MB_TCP_DEBUG            1       /* Debug output in TCP module. */
-#define ENTER_CRITICAL_SECTION( ) taskENTER_CRITICAL()
-#define EXIT_CRITICAL_SECTION( )  taskEXIT_CRITICAL()
 /* ----------------------- Type definitions ---------------------------------*/
 typedef char    BOOL;
 

@@ -1,0 +1,13 @@
+../Core/Src/modbus_task.c:44:6:ModbusTCP_Task	24	static
+../Core/Src/modbus_task.c:71:13:ModbusRTU_TaskWithPort	32	static
+../Core/Src/modbus_task.c:96:6:ModbusRTU1_Task	16	static
+../Core/Src/modbus_task.c:102:6:ModbusRTU2_Task	16	static
+../Core/Src/modbus_task.c:108:6:ModbusRTU1_MasterTask	40	static
+../Core/Src/modbus_task.c:136:6:RS485_1_HelloTask	48	static
+../Core/Src/modbus_task.c:161:6:RS485_2_HelloTask	48	static
+../Core/Src/modbus_task.c:188:1:eMBRegHoldingCB	32	static
+../Core/Src/modbus_task.c:225:17:ModbusCRC16	24	static
+../Core/Src/modbus_task.c:250:13:ModbusHoldingInit	16	static
+../Core/Src/modbus_task.c:267:13:RS485_1_SetTx	16	static
+../Core/Src/modbus_task.c:273:13:RS485_2_SetTx	16	static
+../Core/Src/modbus_task.c:279:12:ModbusRTU1_ReadHolding	72	static

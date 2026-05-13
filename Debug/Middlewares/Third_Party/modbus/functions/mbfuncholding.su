@@ -1,0 +1,4 @@
+../Middlewares/Third_Party/modbus/functions/mbfuncholding.c:76:1:eMBFuncWriteHoldingRegister	24	static
+../Middlewares/Third_Party/modbus/functions/mbfuncholding.c:109:1:eMBFuncWriteMultipleHoldingRegister	24	static
+../Middlewares/Third_Party/modbus/functions/mbfuncholding.c:170:1:eMBFuncReadHoldingRegister	32	static
+../Middlewares/Third_Party/modbus/functions/mbfuncholding.c:235:1:eMBFuncReadWriteMultipleHoldingRegister	32	static

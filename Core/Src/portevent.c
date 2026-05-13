@@ -1,63 +1,108 @@
 /*
- * FreeModbus event queue port for FreeRTOS.
+ * FreeModbus Libary: lwIP Port
+ * Copyright (C) 2006 Christian Walter <wolti@sil.at>
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ *
+ * File: $Id$
  */
 
-#include "FreeRTOS.h"
-#include "queue.h"
-#include "task.h"
-#include "stm32f7xx_hal.h"
+/* ----------------------- System includes ----------------------------------*/
+#include "assert.h"
+
+/* ----------------------- lwIP ---------------------------------------------*/
+#include "lwip/api.h"
+#include "lwip/sys.h"
+
+/* ----------------------- Modbus includes ----------------------------------*/
 #include "mb.h"
 
-#define MB_EVENT_QUEUE_LENGTH 16U
+/* ----------------------- Defines ------------------------------------------*/
+#define MB_POLL_CYCLETIME       100     /* Poll cycle time is 100ms */
+/* ----------------------- Static variables ---------------------------------*/
+static sys_mbox_t xMailBox;
+static eMBEventType eMailBoxEvent;
 
-static QueueHandle_t xMBEventQueue;
-
-BOOL xMBPortEventInit(void)
+/* ----------------------- Start implementation -----------------------------*/
+BOOL
+xMBPortEventInit( void )
 {
-    if (xMBEventQueue == NULL)
+    if (sys_mbox_new(&xMailBox, 16) == ERR_OK)
     {
-        xMBEventQueue = xQueueCreate(MB_EVENT_QUEUE_LENGTH, sizeof(eMBEventType));
+        return TRUE;
     }
-
-    return (xMBEventQueue != NULL) ? TRUE : FALSE;
-}
-
-void vMBPortEventClose(void)
-{
-    if (xMBEventQueue != NULL)
-    {
-        vQueueDelete(xMBEventQueue);
-        xMBEventQueue = NULL;
-    }
-}
-
-BOOL xMBPortEventPost(eMBEventType eEvent)
-{
-    if (xMBEventQueue == NULL)
+    else
     {
         return FALSE;
     }
-
-    if (__get_IPSR() != 0U)
-    {
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        BaseType_t xResult;
-
-        xResult = xQueueSendFromISR(xMBEventQueue, &eEvent, &xHigherPriorityTaskWoken);
-        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-
-        return (xResult == pdPASS) ? TRUE : FALSE;
-    }
-
-    return (xQueueSend(xMBEventQueue, &eEvent, portMAX_DELAY) == pdPASS) ? TRUE : FALSE;
 }
 
-BOOL xMBPortEventGet(eMBEventType *eEvent)
+void
+vMBPortEventClose( void )
 {
-    if (xMBEventQueue == NULL)
+    if( xMailBox != SYS_MBOX_NULL )
+    {
+        sys_mbox_free( xMailBox );
+    }
+}
+
+//BOOL
+//xMBPortEventPost( eMBEventType eEvent )
+//{
+//    eMailBoxEvent = eEvent;
+//    sys_mbox_post( xMailBox, &eMailBoxEvent );
+//    return TRUE;
+//}
+
+BOOL xMBPortEventPost( eMBEventType eEvent )
+{
+    /* 直接把枚举值当作 void* 存进去即可 */
+    if (sys_mbox_trypost(&xMailBox, (void*)eEvent) == ERR_OK)
+    {
+        return TRUE;
+    }
+    else
     {
         return FALSE;
     }
+}
 
-    return (xQueueReceive(xMBEventQueue, eEvent, portMAX_DELAY) == pdPASS) ? TRUE : FALSE;
+
+//BOOL
+//xMBPortEventGet( eMBEventType * eEvent )
+//{
+//    void           *peMailBoxEvent;
+//    BOOL            xEventHappend = FALSE;
+//    u32_t           uiTimeSpent;
+//
+//    uiTimeSpent = sys_arch_mbox_fetch( xMailBox, &peMailBoxEvent, MB_POLL_CYCLETIME );
+//    if( uiTimeSpent != SYS_ARCH_TIMEOUT )
+//    {
+//        *eEvent = *( eMBEventType * ) peMailBoxEvent;
+//        eMailBoxEvent = EV_READY;
+//        xEventHappend = TRUE;
+//    }
+//    return xEventHappend;
+//}
+
+BOOL xMBPortEventGet( eMBEventType * eEvent )
+{
+    void *peMailBoxEvent;
+
+    sys_arch_mbox_fetch(&xMailBox, &peMailBoxEvent, 0);
+
+    *eEvent = (eMBEventType)peMailBoxEvent;
+    return TRUE;
 }

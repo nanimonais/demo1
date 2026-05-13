@@ -1,0 +1,2 @@
+../Core/Src/portother.c:39:1:prvvMBTCPLogFrame	40	static
+../Core/Src/portother.c:119:1:vMBPortLog	24	static
