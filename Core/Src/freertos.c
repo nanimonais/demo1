@@ -41,7 +41,9 @@
 /* USER CODE BEGIN PD */
 #define ENABLE_UART_TEST_TASK   0
 #define ENABLE_SPI_TEST_TASK    0
-#define ENABLE_MODBUS_TCP_TASK  1 			//TCP  从站
+#define ENABLE_MODBUS_TCP_TASK  0 			//TCP  从站
+#define ENABLE_MODBUS_TCP_MASTER_TASK 1		//TCP  主站
+
 #define ENABLE_MODBUS_RTU1_TASK 0 			//485_1从站
 #define ENABLE_MODBUS_RTU2_TASK 0 			//485_2从站
 #define ENABLE_MODBUS_RTU1_MASTER_TASK 0 	//485_1主站
@@ -64,6 +66,12 @@ const osThreadAttr_t modbusTCP_attributes = {
     .stack_size = 1024 * 4,
     .priority = (osPriority_t) osPriorityAboveNormal,
   };
+
+const osThreadAttr_t modbusTcpMaster_attributes = {
+    .name = "modbusTcpMaster",
+    .stack_size = 1024 * 2,
+    .priority = (osPriority_t) osPriorityNormal
+};
 
 const osThreadAttr_t modbusRTU1_attributes = {
     .name = "ModbusRTU1",
@@ -195,6 +203,10 @@ void StartDefaultTask(void *argument)
   osThreadNew(ModbusTCP_Task, NULL, &modbusTCP_attributes);
 #endif
 
+#if ENABLE_MODBUS_TCP_MASTER_TASK
+  osThreadNew(ModbusTCP_MasterTask, NULL, &modbusTcpMaster_attributes);
+#endif
+
 #if ENABLE_MODBUS_RTU1_TASK
   osThreadNew(ModbusRTU1_Task, NULL, &modbusRTU1_attributes);
 #endif
@@ -206,6 +218,8 @@ void StartDefaultTask(void *argument)
 #if ENABLE_MODBUS_RTU1_MASTER_TASK
   osThreadNew(ModbusRTU1_MasterTask, NULL, &modbusRTU1Master_attributes);
 #endif
+
+
 
 #if ENABLE_RS485_1_HELLO_TASK
   osThreadNew(RS485_1_HelloTask, NULL, &rs4851Hello_attributes);

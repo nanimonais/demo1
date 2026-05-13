@@ -15,5 +15,6 @@ void ModbusRTU1_MasterTask(void *argument);
 void RS485_1_HelloTask(void *argument);
 void RS485_2_HelloTask(void *argument);
 void RS485_2_RxTask(void *argument);
+void ModbusTCP_MasterTask(void *argument);
 
 #endif /* INC_MODBUS_TASK_H_ */

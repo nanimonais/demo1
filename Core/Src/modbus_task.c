@@ -14,6 +14,10 @@
 #include "task.h"
 #include "main.h"
 #include "usart.h"
+#include "lwip/sockets.h"
+#include "lwip/inet.h"
+#include "lwip/ip_addr.h"
+#include "lwip/sys.h"
 
 #define REG_HOLDING_START  1
 #define REG_HOLDING_NREGS  100
@@ -55,6 +59,8 @@ static void RS485_1_SetTx(uint8_t enable);
 static void RS485_2_SetTx(uint8_t enable);
 static int ModbusRTU1_ReadHolding(uint8_t slaveId, uint16_t startAddr, uint16_t quantity, uint16_t *pRegs);
 
+static
+
 void ModbusTCP_Task(void *argument)
 {
     eMBErrorCode eStatus;
@@ -79,6 +85,71 @@ void ModbusTCP_Task(void *argument)
     {
         eMBPoll();
         osDelay(1);
+    }
+}
+
+void ModbusTCP_MasterTask(void *argument)
+{
+    uint8_t value = 0;       // 当前要发送的值 0-9
+    uint8_t sendBuf[12];     // Modbus 请求报文
+    uint8_t recvBuf[256];    // Modbus 响应
+    int len, sock;
+    struct sockaddr_in server_addr;
+    ip_addr_t server_ip;
+    uint16_t port = 502;
+
+    IP4_ADDR(&server_ip, 192,168,1,14); // 从站 IP
+
+    for (;;)
+    {
+        // 创建 TCP Socket
+        sock = lwip_socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) { osDelay(1000); continue; }
+
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(port);
+        server_addr.sin_addr.s_addr = server_ip.addr;
+
+        if (lwip_connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0)
+        {
+            lwip_close(sock);
+            osDelay(1000);
+            continue;
+        }
+
+        // 循环发送寄存器值 0-9 +1
+        for (;;)
+        {
+            // 构造 Modbus 写单寄存器请求（示例）
+            // MBAP header: TransactionID=0x0001, ProtocolID=0x0000, Length=0x0006, UnitID=1
+            sendBuf[0] = 0x00; sendBuf[1] = 0x01;  // 事务 ID
+            sendBuf[2] = 0x00; sendBuf[3] = 0x00;  // 协议 ID
+            sendBuf[4] = 0x00; sendBuf[5] = 0x06;  // 长度
+            sendBuf[6] = 0x01;                     // Unit ID
+            sendBuf[7] = 0x06;                     // 功能码 0x06 写单寄存器
+            sendBuf[8] = 0x00; sendBuf[9] = 0x00;  // 地址 0
+            sendBuf[10]= 0x00; sendBuf[11]= value; // 数据: 当前 value
+
+            // 发送请求
+            len = lwip_send(sock, sendBuf, sizeof(sendBuf), 0);
+            if (len <= 0) break; // 断开重连
+
+            // 接收响应
+            len = lwip_recv(sock, recvBuf, sizeof(recvBuf), 0);
+            if (len <= 0) break; // 断开重连
+
+            // 打印或调试
+            printf("Sent value: %d, Response length: %d\n", value, len);
+
+            // 更新 value
+            value++;
+            if (value > 9) value = 0;
+
+            osDelay(500); // 每 500ms 发送一次
+        }
+
+        lwip_close(sock);
+        osDelay(1000); // 重连延时
     }
 }
 
