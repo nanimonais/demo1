@@ -121,6 +121,8 @@ void            vMBTCPPortClose( void );
 
 void            vMBTCPPortDisable( void );
 
+void 			vMBTCPPortPoll( void );
+
 BOOL            xMBTCPPortGetRequest( UCHAR **ppucMBTCPFrame, USHORT * usTCPLength );
 
 BOOL            xMBTCPPortSendResponse( const UCHAR *pucMBTCPFrame, USHORT usTCPLength );

@@ -41,8 +41,8 @@
 /* USER CODE BEGIN PD */
 #define ENABLE_UART_TEST_TASK   0
 #define ENABLE_SPI_TEST_TASK    0
-#define ENABLE_MODBUS_TCP_TASK  0 			//TCP  从站
-#define ENABLE_MODBUS_TCP_MASTER_TASK 1		//TCP  主站
+#define ENABLE_MODBUS_TCP_TASK  1 			//TCP  从站
+#define ENABLE_MODBUS_TCP_MASTER_TASK 0		//TCP  主站
 
 #define ENABLE_MODBUS_RTU1_TASK 0 			//485_1从站
 #define ENABLE_MODBUS_RTU2_TASK 0 			//485_2从站
@@ -129,7 +129,7 @@ static volatile uint8_t uart8_rx_ready;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size =  128 * 4,
+  .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -197,7 +197,7 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* init code for LWIP */
-	MX_LWIP_Init();
+  MX_LWIP_Init();
   /* USER CODE BEGIN StartDefaultTask */
 #if ENABLE_MODBUS_TCP_TASK
   osThreadNew(ModbusTCP_Task, NULL, &modbusTCP_attributes);

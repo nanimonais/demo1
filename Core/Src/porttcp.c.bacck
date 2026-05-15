@@ -1,0 +1,463 @@
+/*
+ * porttcp.c
+ *
+ * FreeModbus TCP port for STM32 + FreeRTOS + lwIP netconn API.
+ *
+ * 重点：
+ * 1. 不使用 lwIP raw API: tcp_new/tcp_bind/tcp_recv/tcp_write 等全部不用。
+ * 2. 所有 TCP 操作都在 ModbusTCP_Task 里通过 vMBTCPPortPoll() 轮询完成。
+ * 3. 只允许一个 TCP client，和原来的 FreeModbus port 行为一致。
+ */
+
+#include <string.h>
+#include <stdint.h>
+
+#include "port.h"
+
+#include "lwip/api.h"
+#include "lwip/err.h"
+#include "lwip/ip_addr.h"
+
+#include "mb.h"
+#include "mbport.h"
+
+/* ----------------------- MBAP Header --------------------------------------
+ * Modbus TCP ADU:
+ *
+ * Byte 0-1: Transaction ID
+ * Byte 2-3: Protocol ID, Modbus = 0x0000
+ * Byte 4-5: Length, 后续字节数 = Unit ID + PDU
+ * Byte 6  : Unit ID
+ * Byte 7  : Function Code
+ */
+#define MB_TCP_TID                 0U
+#define MB_TCP_PID                 2U
+#define MB_TCP_LEN                 4U
+#define MB_TCP_UID                 6U
+#define MB_TCP_FUNC                7U
+#define MB_TCP_PROTOCOL_ID         0U
+
+#define MB_TCP_DEFAULT_PORT        502U
+#define MB_TCP_BUF_SIZE            (256U + 7U)
+
+/*
+ * recv/accept 超时。
+ *
+ * 这里不能永久阻塞，因为 ModbusTCP_Task 还要继续调用 eMBPoll()
+ * 去处理 EV_FRAME_RECEIVED / EV_EXECUTE。
+ */
+#define MB_TCP_NETCONN_TIMEOUT_MS  1U
+
+/* ----------------------- Static variables --------------------------------- */
+
+static struct netconn *pxMBTCPListenConn = NULL;
+static struct netconn *pxMBTCPClientConn = NULL;
+
+static UCHAR  aucTCPBuf[MB_TCP_BUF_SIZE];
+static USHORT usTCPBufPos = 0U;
+static USHORT usTCPFrameLen = 0U;
+
+/*
+ * xFrameReady:
+ *   已经收到完整 Modbus TCP 帧，并且已经投递 EV_FRAME_RECEIVED。
+ *
+ * xFrameProcessing:
+ *   FreeModbus 已经通过 xMBTCPPortGetRequest() 拿走这帧，
+ *   但还没调用 xMBTCPPortSendResponse() 发回应答。
+ *
+ * 在 xFrameProcessing = TRUE 时，不能覆盖 aucTCPBuf，
+ * 因为 eMBTCPReceive() 返回给协议栈的是 aucTCPBuf 里的指针。
+ */
+static BOOL xFrameReady = FALSE;
+static BOOL xFrameProcessing = FALSE;
+
+/* ----------------------- Private functions -------------------------------- */
+
+static void prvMBTCPResetFrameBuffer(void);
+static void prvMBTCPReleaseClient(void);
+static void prvMBTCPReleaseListen(void);
+static BOOL prvMBTCPAppendData(const UCHAR *pucData, USHORT usLen);
+static BOOL prvMBTCPCheckFrameComplete(void);
+
+static void prvMBTCPResetFrameBuffer(void)
+{
+    usTCPBufPos = 0U;
+    usTCPFrameLen = 0U;
+    xFrameReady = FALSE;
+    xFrameProcessing = FALSE;
+    memset(aucTCPBuf, 0, sizeof(aucTCPBuf));
+}
+
+static void prvMBTCPReleaseClient(void)
+{
+    if (pxMBTCPClientConn != NULL)
+    {
+        /*
+         * netconn_close() 用于关闭 TCP 连接；
+         * netconn_delete() 用于释放 netconn 结构。
+         */
+        (void)netconn_close(pxMBTCPClientConn);
+        netconn_delete(pxMBTCPClientConn);
+        pxMBTCPClientConn = NULL;
+    }
+
+    prvMBTCPResetFrameBuffer();
+}
+
+static void prvMBTCPReleaseListen(void)
+{
+    if (pxMBTCPListenConn != NULL)
+    {
+        (void)netconn_close(pxMBTCPListenConn);
+        netconn_delete(pxMBTCPListenConn);
+        pxMBTCPListenConn = NULL;
+    }
+}
+
+/*
+ * 检查当前 aucTCPBuf 中是否已经有一帧完整的 Modbus TCP ADU。
+ *
+ * 返回 TRUE:
+ *   已经收到完整一帧，且已经投递 EV_FRAME_RECEIVED。
+ *
+ * 返回 FALSE:
+ *   还没有完整帧，或者连接被关闭。
+ */
+static BOOL prvMBTCPCheckFrameComplete(void)
+{
+    USHORT usProtocolId;
+    USHORT usLengthField;
+    USHORT usFullFrameLength;
+
+    /*
+     * MBAP 至少要收到 7 字节，才知道功能码。
+     */
+    if (usTCPBufPos < MB_TCP_FUNC)
+    {
+        return FALSE;
+    }
+
+    /*
+     * Protocol ID 必须是 0。
+     */
+    usProtocolId = (USHORT)(((USHORT)aucTCPBuf[MB_TCP_PID] << 8U) |
+                             (USHORT)aucTCPBuf[MB_TCP_PID + 1U]);
+
+    if (usProtocolId != MB_TCP_PROTOCOL_ID)
+    {
+        prvMBTCPReleaseClient();
+        return FALSE;
+    }
+
+    /*
+     * Length 字段包含 Unit ID + PDU。
+     * 所以完整 ADU 长度 = 6 + Length。
+     */
+    usLengthField = (USHORT)(((USHORT)aucTCPBuf[MB_TCP_LEN] << 8U) |
+                              (USHORT)aucTCPBuf[MB_TCP_LEN + 1U]);
+
+    /*
+     * 最小长度：
+     * Unit ID 1 字节 + Function Code 1 字节 = 2。
+     */
+    if (usLengthField < 2U)
+    {
+        prvMBTCPReleaseClient();
+        return FALSE;
+    }
+
+    usFullFrameLength = (USHORT)(MB_TCP_UID + usLengthField);
+
+    if (usFullFrameLength > MB_TCP_BUF_SIZE)
+    {
+        prvMBTCPReleaseClient();
+        return FALSE;
+    }
+
+    if (usTCPBufPos < usFullFrameLength)
+    {
+        return FALSE;
+    }
+
+    /*
+     * 当前实现保持和原来的 FreeModbus port 一样：
+     * 一次只处理一帧，不支持一个 TCP 包里连续塞多帧。
+     * Modbus Poll 正常是一问一答，不会有问题。
+     */
+    if (usTCPBufPos > usFullFrameLength)
+    {
+        prvMBTCPReleaseClient();
+        return FALSE;
+    }
+
+    usTCPFrameLen = usFullFrameLength;
+    xFrameReady = TRUE;
+
+    /*
+     * 通知 FreeModbus 协议栈：收到完整帧。
+     * eMBPoll() 会取到 EV_FRAME_RECEIVED，然后调用 eMBTCPReceive()。
+     */
+    (void)xMBPortEventPost(EV_FRAME_RECEIVED);
+
+    return TRUE;
+}
+
+static BOOL prvMBTCPAppendData(const UCHAR *pucData, USHORT usLen)
+{
+    if ((pucData == NULL) || (usLen == 0U))
+    {
+        return TRUE;
+    }
+
+    if ((USHORT)(usTCPBufPos + usLen) > MB_TCP_BUF_SIZE)
+    {
+        prvMBTCPReleaseClient();
+        return FALSE;
+    }
+
+    memcpy(&aucTCPBuf[usTCPBufPos], pucData, usLen);
+    usTCPBufPos = (USHORT)(usTCPBufPos + usLen);
+
+    return prvMBTCPCheckFrameComplete();
+}
+
+/* ----------------------- Public functions --------------------------------- */
+
+/*
+ * 由 eMBTCPDoInit() 调用。
+ */
+BOOL xMBTCPPortInit(USHORT usTCPPort)
+{
+    err_t xErr;
+    USHORT usPort;
+
+    prvMBTCPReleaseClient();
+    prvMBTCPReleaseListen();
+
+    usPort = (usTCPPort == 0U) ? MB_TCP_DEFAULT_PORT : usTCPPort;
+
+    pxMBTCPListenConn = netconn_new(NETCONN_TCP);
+    if (pxMBTCPListenConn == NULL)
+    {
+        return FALSE;
+    }
+
+    /*
+     * 让 accept 不永久阻塞。
+     */
+    netconn_set_recvtimeout(pxMBTCPListenConn, MB_TCP_NETCONN_TIMEOUT_MS);
+
+    xErr = netconn_bind(pxMBTCPListenConn, IP_ADDR_ANY, (u16_t)usPort);
+    if (xErr != ERR_OK)
+    {
+        prvMBTCPReleaseListen();
+        return FALSE;
+    }
+
+#if LWIP_TCP
+    /*
+     * backlog = 1：只允许一个等待连接。
+     */
+    xErr = netconn_listen_with_backlog(pxMBTCPListenConn, 1);
+#else
+    xErr = netconn_listen(pxMBTCPListenConn);
+#endif
+
+    if (xErr != ERR_OK)
+    {
+        prvMBTCPReleaseListen();
+        return FALSE;
+    }
+
+    prvMBTCPResetFrameBuffer();
+
+    return TRUE;
+}
+
+/*
+ * 新增函数：
+ * 需要在 ModbusTCP_Task() 的 for(;;) 里周期调用。
+ *
+ * 这个函数做两件事：
+ * 1. 没有客户端时，尝试 accept。
+ * 2. 有客户端且当前没有待处理帧时，尝试 recv。
+ */
+void vMBTCPPortPoll(void)
+{
+    err_t xErr;
+    struct netbuf *pxNetBuf = NULL;
+    struct netconn *pxNewConn = NULL;
+
+    /*
+     * 当前有完整帧正在等待 FreeModbus 处理，或者正在处理，
+     * 此时不能继续读新数据，否则会覆盖 aucTCPBuf。
+     */
+    if ((xFrameReady == TRUE) || (xFrameProcessing == TRUE))
+    {
+        return;
+    }
+
+    if (pxMBTCPListenConn == NULL)
+    {
+        return;
+    }
+
+    /*
+     * 没有客户端时，尝试接受新连接。
+     */
+    if (pxMBTCPClientConn == NULL)
+    {
+        xErr = netconn_accept(pxMBTCPListenConn, &pxNewConn);
+
+        if (xErr == ERR_OK)
+        {
+            pxMBTCPClientConn = pxNewConn;
+            netconn_set_recvtimeout(pxMBTCPClientConn, MB_TCP_NETCONN_TIMEOUT_MS);
+            prvMBTCPResetFrameBuffer();
+        }
+        else
+        {
+            /*
+             * ERR_TIMEOUT 是正常情况：当前没有新连接。
+             */
+            return;
+        }
+    }
+
+    if (pxMBTCPClientConn == NULL)
+    {
+        return;
+    }
+
+    /*
+     * 有客户端时，尝试接收数据。
+     * 因为设置了 recv timeout，所以这里不会永久阻塞。
+     */
+    xErr = netconn_recv(pxMBTCPClientConn, &pxNetBuf);
+
+    if (xErr == ERR_TIMEOUT)
+    {
+        return;
+    }
+
+    if (xErr != ERR_OK)
+    {
+        /*
+         * 客户端断开、复位、网络错误，直接释放连接。
+         */
+        prvMBTCPReleaseClient();
+        return;
+    }
+
+    if (pxNetBuf != NULL)
+    {
+        do
+        {
+            void *pvData = NULL;
+            u16_t usLen = 0U;
+
+            if (netbuf_data(pxNetBuf, &pvData, &usLen) == ERR_OK)
+            {
+                if (prvMBTCPAppendData((const UCHAR *)pvData, (USHORT)usLen) == TRUE)
+                {
+                    /*
+                     * 已经收到完整帧，先不继续读。
+                     * 等 FreeModbus 发完响应后再读下一帧。
+                     */
+                    break;
+                }
+
+                /*
+                 * 如果连接已被释放，直接退出。
+                 */
+                if (pxMBTCPClientConn == NULL)
+                {
+                    break;
+                }
+            }
+        } while (netbuf_next(pxNetBuf) >= 0);
+
+        netbuf_delete(pxNetBuf);
+    }
+}
+
+/*
+ * 由 eMBTCPStop() 调用。
+ * 这里仅断开当前 client，不关监听口。
+ */
+void vMBTCPPortDisable(void)
+{
+    prvMBTCPReleaseClient();
+}
+
+/*
+ * 由 eMBClose() 调用。
+ */
+void vMBTCPPortClose(void)
+{
+    prvMBTCPReleaseClient();
+    prvMBTCPReleaseListen();
+
+    vMBPortEventClose();
+}
+
+/*
+ * eMBTCPReceive() 会调用这个函数取出完整 TCP ADU。
+ *
+ * 注意：这里不能立刻清空 aucTCPBuf。
+ * 因为 FreeModbus 后面发响应时，还要复用原来的 MBAP header。
+ */
+BOOL xMBTCPPortGetRequest(UCHAR **ppucMBTCPFrame, USHORT *usTCPLength)
+{
+    if ((ppucMBTCPFrame == NULL) || (usTCPLength == NULL))
+    {
+        return FALSE;
+    }
+
+    if (xFrameReady != TRUE)
+    {
+        return FALSE;
+    }
+
+    *ppucMBTCPFrame = &aucTCPBuf[0];
+    *usTCPLength = usTCPFrameLen;
+
+    xFrameReady = FALSE;
+    xFrameProcessing = TRUE;
+
+    return TRUE;
+}
+
+/*
+ * eMBTCPSend() 会调用这个函数发送响应。
+ */
+BOOL xMBTCPPortSendResponse(const UCHAR *pucMBTCPFrame, USHORT usTCPLength)
+{
+    err_t xErr;
+
+    if ((pxMBTCPClientConn == NULL) ||
+        (pucMBTCPFrame == NULL) ||
+        (usTCPLength == 0U))
+    {
+        prvMBTCPResetFrameBuffer();
+        return FALSE;
+    }
+
+    xErr = netconn_write(pxMBTCPClientConn,
+                         pucMBTCPFrame,
+                         (size_t)usTCPLength,
+                         NETCONN_COPY);
+
+    /*
+     * 不管发送成功失败，这一帧都处理结束。
+     */
+    prvMBTCPResetFrameBuffer();
+
+    if (xErr != ERR_OK)
+    {
+        prvMBTCPReleaseClient();
+        return FALSE;
+    }
+
+    return TRUE;
+}

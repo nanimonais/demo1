@@ -59,8 +59,6 @@ static void RS485_1_SetTx(uint8_t enable);
 static void RS485_2_SetTx(uint8_t enable);
 static int ModbusRTU1_ReadHolding(uint8_t slaveId, uint16_t startAddr, uint16_t quantity, uint16_t *pRegs);
 
-static
-
 void ModbusTCP_Task(void *argument)
 {
     eMBErrorCode eStatus;
@@ -87,6 +85,70 @@ void ModbusTCP_Task(void *argument)
         osDelay(1);
     }
 }
+
+//void ModbusTCP_Task(void *argument)
+//{
+//    eMBErrorCode eStatus;
+//
+//    (void)argument;
+//
+//    /*
+//     * 建议 TCP 从站也初始化一下 holding register。
+//     * 你原来只在 RTU 从站任务里调用 ModbusHoldingInit()。
+//     * 如果只开 TCP 从站，不初始化的话，寄存器初值可能不是你想要的。
+//     */
+//    ModbusHoldingInit();
+//
+//    eStatus = eMBTCPInit(502);
+//    if (eStatus != MB_ENOERR)
+//    {
+//        printf("eMBTCPInit FAILED, err = %d\r\n", eStatus);
+//        for (;;)
+//        {
+//            osDelay(1000);
+//        }
+//    }
+//
+//    printf("eMBTCPInit OK\r\n");
+//
+//    eStatus = eMBEnable();
+//    if (eStatus != MB_ENOERR)
+//    {
+//        printf("eMBEnable FAILED, err = %d\r\n", eStatus);
+//        for (;;)
+//        {
+//            osDelay(1000);
+//        }
+//    }
+//
+//    printf("eMBEnable OK\r\n");
+//
+//    for (;;)
+//    {
+//        /*
+//         * 先轮询 TCP：
+//         * - 没连接时 accept
+//         * - 有连接时 recv
+//         * - 收到完整 Modbus TCP 帧后投递 EV_FRAME_RECEIVED
+//         */
+//        vMBTCPPortPoll();
+//
+//        /*
+//         * eMBPoll() 一次通常只处理一个事件。
+//         *
+//         * 收到完整帧后：
+//         * 第 1 次 eMBPoll(): 处理 EV_FRAME_RECEIVED，并投递 EV_EXECUTE
+//         * 第 2 次 eMBPoll(): 处理 EV_EXECUTE，并发送响应
+//         *
+//         * 所以这里连续调用几次，减少响应延迟。
+//         */
+//        (void)eMBPoll();
+//        (void)eMBPoll();
+//        (void)eMBPoll();
+//
+//        osDelay(1);
+//    }
+//}
 
 void ModbusTCP_MasterTask(void *argument)
 {

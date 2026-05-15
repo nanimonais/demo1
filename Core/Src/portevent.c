@@ -128,11 +128,17 @@ BOOL xMBPortEventGet(eMBEventType *eEvent)
         return FALSE;
     }
 
-    xResult = xQueueReceive(
-        xMBEventQueue,
-        eEvent,
-        portMAX_DELAY
-    );
+    /*
+     * 重要：
+     * 这里不能 portMAX_DELAY。
+     *
+     * 对 TCP netconn 方案来说，ModbusTCP_Task 需要不断：
+     *   vMBTCPPortPoll();
+     *   eMBPoll();
+     *
+     * 如果这里永久阻塞，任务就没有机会再 poll TCP。
+     */
+    xResult = xQueueReceive(xMBEventQueue, eEvent, 0);
 
     return (xResult == pdPASS) ? TRUE : FALSE;
 }

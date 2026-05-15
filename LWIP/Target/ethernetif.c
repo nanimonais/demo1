@@ -6,7 +6,7 @@
   ******************************************************************************
   * @attention
   *
-  * <h2><center>&copy; Copyright (c) 2025 STMicroelectronics.
+  * <h2><center>&copy; Copyright (c) 2026 STMicroelectronics.
   * All rights reserved.</center></h2>
   *
   * This software component is licensed by ST under Ultimate Liberty license
@@ -36,7 +36,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* The time to block waiting for input. */
-#define TIME_WAITING_FOR_INPUT ( portMAX_DELAY )
+#define TIME_WAITING_FOR_INPUT ( pdMS_TO_TICKS(10) )
 /* USER CODE BEGIN OS_THREAD_STACK_SIZE_WITH_RTOS */
 /* Stack size of the interface thread */
 #define INTERFACE_THREAD_STACK_SIZE ( 350 )
@@ -71,6 +71,76 @@ __ALIGN_BEGIN uint8_t Rx_Buff[ETH_RXBUFNB][ETH_RX_BUF_SIZE] __ALIGN_END; /* Ethe
 __ALIGN_BEGIN uint8_t Tx_Buff[ETH_TXBUFNB][ETH_TX_BUF_SIZE] __ALIGN_END; /* Ethernet Transmit Buffer */
 
 /* USER CODE BEGIN 2 */
+
+/* USER CODE BEGIN 2 */
+extern ETH_HandleTypeDef heth;
+volatile uint32_t g_eth_rx_irq_count = 0;
+volatile uint32_t g_eth_rx_timeout_poll_count = 0;
+volatile uint32_t g_eth_rx_frame_count = 0;
+volatile uint32_t g_eth_rx_null_count = 0;
+volatile uint32_t g_eth_rx_input_ok_count = 0;
+volatile uint32_t g_eth_rx_input_err_count = 0;
+volatile uint32_t g_eth_rx_pbuf_alloc_fail_count = 0;
+
+volatile uint32_t g_eth_tx_ok_count = 0;
+volatile uint32_t g_eth_tx_busy_count = 0;
+volatile uint32_t g_eth_tx_hal_err_count = 0;
+
+volatile uint32_t g_eth_rbus_count = 0;
+volatile uint32_t g_eth_tus_count = 0;
+volatile uint32_t g_eth_dmasr_last = 0;
+
+/*
+ * ETH DMA 恢复函数
+ *
+ * RBUS = Receive Buffer Unavailable
+ *        RX DMA 没有可用接收 buffer，可能导致后续收不到包。
+ *
+ * TUS  = Transmit Underflow
+ *        TX DMA 发送下溢，可能导致后续发不出包。
+ */
+static void ETH_DMA_CheckAndResume(void)
+{
+    uint32_t dmasr;
+
+    if (heth.Instance == NULL)
+    {
+        return;
+    }
+
+    dmasr = heth.Instance->DMASR;
+    g_eth_dmasr_last = dmasr;
+
+    if ((dmasr & ETH_DMASR_RBUS) != 0U)
+    {
+        g_eth_rbus_count++;
+
+        /*
+         * 写 1 清 RBUS 标志
+         */
+        heth.Instance->DMASR = ETH_DMASR_RBUS;
+
+        /*
+         * Resume RX DMA
+         */
+        heth.Instance->DMARPDR = 0;
+    }
+
+    if ((dmasr & ETH_DMASR_TUS) != 0U)
+    {
+        g_eth_tus_count++;
+
+        /*
+         * 写 1 清 TUS 标志
+         */
+        heth.Instance->DMASR = ETH_DMASR_TUS;
+
+        /*
+         * Resume TX DMA
+         */
+        heth.Instance->DMATPDR = 0;
+    }
+}
 
 /* USER CODE END 2 */
 
@@ -181,12 +251,35 @@ void HAL_ETH_MspDeInit(ETH_HandleTypeDef* ethHandle)
   * @param  heth: ETH handle
   * @retval None
   */
-void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
-{
-  osSemaphoreRelease(s_xSemaphore);
-}
+//void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
+//{
+//  osSemaphoreRelease(s_xSemaphore);
+//}
 
 /* USER CODE BEGIN 4 */
+void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
+{
+    (void)heth;
+
+    g_eth_rx_irq_count++;
+
+    if (s_xSemaphore != NULL)
+    {
+        osSemaphoreRelease(s_xSemaphore);
+    }
+}
+
+void HAL_ETH_ErrorCallback(ETH_HandleTypeDef *heth)
+{
+    (void)heth;
+
+    ETH_DMA_CheckAndResume();
+
+    if (s_xSemaphore != NULL)
+    {
+        osSemaphoreRelease(s_xSemaphore);
+    }
+}
 
 /* USER CODE END 4 */
 
@@ -216,7 +309,7 @@ static void low_level_init(struct netif *netif)
   heth.Init.Speed = ETH_SPEED_100M;
   heth.Init.DuplexMode = ETH_MODE_FULLDUPLEX;
   heth.Init.PhyAddress = LAN8742A_PHY_ADDRESS;
-  MACAddr[0] = 0x00;
+  MACAddr[0] = 0x02;
   MACAddr[1] = 0x80;
   MACAddr[2] = 0xE1;
   MACAddr[3] = 0x00;
@@ -224,7 +317,7 @@ static void low_level_init(struct netif *netif)
   MACAddr[5] = 0x00;
   heth.Init.MACAddr = &MACAddr[0];
   heth.Init.RxMode = ETH_RXINTERRUPT_MODE;
-  heth.Init.ChecksumMode = ETH_CHECKSUM_BY_HARDWARE;
+  heth.Init.ChecksumMode = ETH_CHECKSUM_BY_SOFTWARE;
   heth.Init.MediaInterface = ETH_MEDIA_INTERFACE_RMII;
 
   /* USER CODE BEGIN MACADDRESS */
@@ -340,11 +433,14 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   for(q = p; q != NULL; q = q->next)
     {
       /* Is this buffer available? If not, goto error */
-      if((DmaTxDesc->Status & ETH_DMATXDESC_OWN) != (uint32_t)RESET)
-      {
-        errval = ERR_USE;
-        goto error;
-      }
+	  if ((DmaTxDesc->Status & ETH_DMATXDESC_OWN) != (uint32_t)RESET)
+	  {
+	      g_eth_tx_busy_count++;
+	      ETH_DMA_CheckAndResume();
+
+	      errval = ERR_USE;
+	      goto error;
+	  }
 
       /* Get bytes in current lwIP buffer */
       byteslefttocopy = q->len;
@@ -360,10 +456,13 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
         DmaTxDesc = (ETH_DMADescTypeDef *)(DmaTxDesc->Buffer2NextDescAddr);
 
         /* Check if the buffer is available */
-        if((DmaTxDesc->Status & ETH_DMATXDESC_OWN) != (uint32_t)RESET)
+        if ((DmaTxDesc->Status & ETH_DMATXDESC_OWN) != (uint32_t)RESET)
         {
-          errval = ERR_USE;
-          goto error;
+            g_eth_tx_busy_count++;
+            ETH_DMA_CheckAndResume();
+
+            errval = ERR_USE;
+            goto error;
         }
 
         buffer = (uint8_t *)(DmaTxDesc->Buffer1Addr);
@@ -381,9 +480,17 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
     }
 
   /* Prepare transmit descriptors to give to DMA */
-  HAL_ETH_TransmitFrame(&heth, framelength);
-
-  errval = ERR_OK;
+  if (HAL_ETH_TransmitFrame(&heth, framelength) == HAL_OK)
+  {
+      g_eth_tx_ok_count++;
+      errval = ERR_OK;
+  }
+  else
+  {
+      g_eth_tx_hal_err_count++;
+      ETH_DMA_CheckAndResume();
+      errval = ERR_IF;
+  }
 
 error:
 
@@ -396,6 +503,8 @@ error:
     /* Resume DMA transmission*/
     heth.Instance->DMATPDR = 0;
   }
+  ETH_DMA_CheckAndResume();
+
   return errval;
 }
 
@@ -421,8 +530,10 @@ static struct pbuf * low_level_input(struct netif *netif)
 
   /* get received frame */
   if (HAL_ETH_GetReceivedFrame_IT(&heth) != HAL_OK)
-
-    return NULL;
+  {
+      ETH_DMA_CheckAndResume();
+      return NULL;
+  }
 
   /* Obtain the size of the packet and put it into the "len" variable. */
   len = heth.RxFrameInfos.length;
@@ -430,8 +541,15 @@ static struct pbuf * low_level_input(struct netif *netif)
 
   if (len > 0)
   {
-    /* We allocate a pbuf chain of pbufs from the Lwip buffer pool */
-    p = pbuf_alloc(PBUF_RAW, len, PBUF_POOL);
+      /*
+       * We allocate a pbuf chain of pbufs from the Lwip buffer pool
+       */
+      p = pbuf_alloc(PBUF_RAW, len, PBUF_POOL);
+
+      if (p == NULL)
+      {
+          g_eth_rx_pbuf_alloc_fail_count++;
+      }
   }
 
   if (p != NULL)
@@ -484,6 +602,7 @@ static struct pbuf * low_level_input(struct netif *netif)
     /* Resume DMA reception */
     heth.Instance->DMARPDR = 0;
   }
+  ETH_DMA_CheckAndResume();
   return p;
 }
 
@@ -496,6 +615,7 @@ static struct pbuf * low_level_input(struct netif *netif)
  *
  * @param netif the lwip network interface structure for this ethernetif
  */
+#if 0
 void ethernetif_input(void* argument)
 {
   struct pbuf *p;
@@ -520,6 +640,61 @@ void ethernetif_input(void* argument)
       } while(p!=NULL);
     }
   }
+}
+#endif
+
+void ethernetif_input(void* argument)
+{
+    struct pbuf *p;
+    struct netif *netif = (struct netif *) argument;
+    err_t input_err;
+
+    for (;;)
+    {
+        /*
+         * 不再永久等待。
+         * 即使没有 RX 中断，也每 10ms 醒一次，检查 DMA 是否卡住。
+         */
+        if (osSemaphoreAcquire(s_xSemaphore, TIME_WAITING_FOR_INPUT) != osOK)
+        {
+            g_eth_rx_timeout_poll_count++;
+        }
+
+        ETH_DMA_CheckAndResume();
+
+        do
+        {
+            LOCK_TCPIP_CORE();
+
+            p = low_level_input(netif);
+
+            if (p != NULL)
+            {
+                g_eth_rx_frame_count++;
+
+                input_err = netif->input(p, netif);
+
+                if (input_err != ERR_OK)
+                {
+                    g_eth_rx_input_err_count++;
+                    pbuf_free(p);
+                }
+                else
+                {
+                    g_eth_rx_input_ok_count++;
+                }
+            }
+            else
+            {
+                g_eth_rx_null_count++;
+            }
+
+            UNLOCK_TCPIP_CORE();
+
+            ETH_DMA_CheckAndResume();
+
+        } while (p != NULL);
+    }
 }
 
 #if !LWIP_ARP

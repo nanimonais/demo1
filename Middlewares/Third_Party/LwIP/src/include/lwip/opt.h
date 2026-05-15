@@ -579,7 +579,7 @@
  * PBUF_POOL_SIZE: the number of buffers in the pbuf pool.
  */
 #if !defined PBUF_POOL_SIZE || defined __DOXYGEN__
-#define PBUF_POOL_SIZE                  32
+#define PBUF_POOL_SIZE                  16
 #endif
 
 /** MEMP_NUM_API_MSG: the number of concurrently active calls to various
@@ -1311,7 +1311,7 @@
  * To achieve good performance, this should be at least 2 * TCP_MSS.
  */
 #if !defined TCP_SND_BUF || defined __DOXYGEN__
-#define TCP_SND_BUF                     (4 * TCP_MSS)
+#define TCP_SND_BUF                     (2 * TCP_MSS)
 #endif
 
 /**
